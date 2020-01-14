@@ -43,6 +43,14 @@ void read_imu();
 void update_filter();
 
 //global variables
+
+struct Keyboard {
+  char key_press;
+  int heartbeat;
+  int version;
+};
+Keyboard* shared_memory; 
+int run_program=1;
 int imu;
 float x_gyro_calibration=0;
 float y_gyro_calibration=0;
@@ -64,10 +72,15 @@ int main (int argc, char *argv[])
 
     setup_imu();
     calibrate_imu();
+
+    //in main before while(1) loop add...
+    setup_keyboard();
+    signal(SIGINT, &trap);
+
+    //to refresh values from shared memory first 
+    Keyboard keyboard=*shared_memory;
     
- 
-    
-    while(1)
+    while(run_program==1)
     {
       read_imu();      
       update_filter();   
@@ -75,14 +88,12 @@ int main (int argc, char *argv[])
      
     }
       
-    
-   
   
 }
 
 void calibrate_imu()
 {
-  x_gyro_calibration = 0;
+  x_gyro_calibration = 0; // set all values to 0 initially
   y_gyro_calibration = 0;
   z_gyro_calibration = 0;
   roll_calibration = 0;
@@ -93,9 +104,9 @@ void calibrate_imu()
   float ay = 0;
   
   int i;
-  for (i = 1; i <= 1000; i++) {
+  for (i = 1; i <= 1000; i++) { // averaging over 1000 calculations for initial calculation
     
-    int address = 67;
+    int address = 67; // x gyro value address
     
     // high and low
     int vh = wiringPiI2CReadReg8(imu, address);
@@ -110,9 +121,9 @@ void calibrate_imu()
       vw=-vw-1;
     }
     
-    x_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps
+    x_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps + averaging
     
-    address = 69; 
+    address = 69; // y gyro value address
        
     // high and low
     vh = wiringPiI2CReadReg8(imu, address);
@@ -127,9 +138,9 @@ void calibrate_imu()
       vw=-vw-1;
     }
     
-    y_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps
+    y_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps + averaging
     
-    address = 71;
+    address = 71; // z gyro value address
     
         
     // high and low
@@ -145,27 +156,12 @@ void calibrate_imu()
       vw=-vw-1;
     }
     
-    z_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps
+    z_gyro_calibration += (vw * 500.0 / 32768.0) / 1000.0; // normalized to dps + averaging
     
     
-    address = 59; 
-    
-    // high and low
-    vh = wiringPiI2CReadReg8(imu, address);
-    vl = wiringPiI2CReadReg8(imu, address+1);
-    
-    
-    // two's complement
-    vw=(((vh<<8)&0xff00)|(vl&0x00ff))&0xffff;
-    if(vw>0x8000)
-    {
-      vw=vw ^ 0xffff;
-      vw=-vw-1;
-    }
-    
-    ax = vw;  
-    
-    address = 61;
+    // getting x accel and y accel values to calculate roll and pitch
+
+    address = 59; // x accel value location
     
     // high and low
     vh = wiringPiI2CReadReg8(imu, address);
@@ -180,9 +176,26 @@ void calibrate_imu()
       vw=-vw-1;
     }
     
-    ay = vw;  
+    ax = vw;  // setting ax value
+    
+    address = 61; // y accel value location
+    
+    // high and low
+    vh = wiringPiI2CReadReg8(imu, address);
+    vl = wiringPiI2CReadReg8(imu, address+1);
+    
+    
+    // two's complement
+    vw=(((vh<<8)&0xff00)|(vl&0x00ff))&0xffff;
+    if(vw>0x8000)
+    {
+      vw=vw ^ 0xffff;
+      vw=-vw-1;
+    }
+    
+    ay = vw;  // setting ay value
         
-    address = 63; 
+    address = 63; // z accel value location
        
     // high and low
     vh = wiringPiI2CReadReg8(imu, address);
@@ -198,22 +211,27 @@ void calibrate_imu()
     }
     
     
-    accel_z_calibration += (vw * 2.0 / 32768.0) / 1000.0; // normlaized to dps
-    az = vw;  
+    accel_z_calibration += (vw * 2.0 / 32768.0) / 1000.0; // normalized to dps + averaging
+
+    az = vw;  // setting az value
      
-    roll_calibration += (atan2(ax, -az) * (180.0/M_PI)) / 1000.0;
-    
-    pitch_calibration += (atan2(ay, -az) * (180.0/M_PI)) / 1000.0;
+
+    // roll and pitch calculations
+
+    roll_calibration += (atan2(ay, -az)*180.0/M_PI)/1000.0;
+
+	  pitch_calibration += (atan2(ax, -az)*180.0/M_PI)/1000.0;
 
   }
-printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
+  
+  printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
 
 
 }
 
 void read_imu()
 {
-  int address=59;//todo: set address value for accel x value 
+  int address=59; // address for accel x value 
   float ax=0;
   float az=0;
   float ay=0; 
@@ -234,7 +252,7 @@ void read_imu()
   imu_data[3] = (vw * 2.0 / 32768.0); //convert vw from raw values to g's (normalize by 2/32768.0)
   
   
-  address=61;//todo: set address value for accel y value
+  address=61; // address value for accel y value
   vh=wiringPiI2CReadReg8(imu,address);
   vl=wiringPiI2CReadReg8(imu,address+1);
   vw=(((vh<<8)&0xff00)|(vl&0x00ff))&0xffff;
@@ -246,7 +264,7 @@ void read_imu()
   imu_data[4] = (vw * 2.0 / 32768.0); //convert vw from raw values to g's
   
   
-  address=63;//todo: set addres value for accel z value;
+  address=63; //address value for accel z value;
   vh=wiringPiI2CReadReg8(imu,address);
   vl=wiringPiI2CReadReg8(imu,address+1);
   vw=(((vh<<8)&0xff00)|(vl&0x00ff))&0xffff;
@@ -258,7 +276,7 @@ void read_imu()
   imu_data[5] = (vw * 2.0 / 32768.0); //convert vw from raw values to g's
   
   
-  address=67;// gyro x value;
+  address=67; // gyro x value;
   vh=wiringPiI2CReadReg8(imu,address);
   vl=wiringPiI2CReadReg8(imu,address+1);
   vw=(((vh<<8)&0xff00)|(vl&0x00ff))&0xffff;
@@ -292,13 +310,15 @@ void read_imu()
   imu_data[2]= -z_gyro_calibration + (vw * 500.0 / 32768.0);////todo: convert vw from raw values to degrees/second
   
   
-  az = imu_data[5];
+  az = imu_data[5];  // pulling out the values to display
   ay = imu_data[4];
   ax = imu_data[3];
   
-  roll = roll_calibration + (atan2(ax, -az) * (180.0/M_PI));
-    
-  pitch = -pitch_calibration - (atan2(ay, -az) * (180.0/M_PI));  
+  // roll and pitch calculations
+
+  roll = -roll_calibration + (atan2(imu_data[4], -imu_data[5])*180.0/M_PI);
+  
+  pitch = -pitch_calibration + (atan2(imu_data[3], -imu_data[5])*180.0/M_PI); 
 
   printf("Gyros: (%10.5f %10.5f %10.5f), Roll:  %10.5f, Pitch: %10.5f\n\r",imu_data[0], imu_data[1], imu_data[2], roll, pitch);
 
@@ -326,6 +346,44 @@ void update_filter()
   time_prev=time_curr;
   
   //comp. filter for roll, pitch here: 
+}
+
+//function to add
+void setup_keyboard()
+{
+
+  int segment_id;   
+  struct shmid_ds shmbuffer; 
+  int segment_size; 
+  const int shared_segment_size = 0x6400; 
+  int smhkey=33222;
+  
+  /* Allocate a shared memory segment.  */ 
+  segment_id = shmget (smhkey, shared_segment_size,IPC_CREAT | 0666); 
+  /* Attach the shared memory segment.  */ 
+  shared_memory = (Keyboard*) shmat (segment_id, 0, 0); 
+  printf ("shared memory attached at address %p\n", shared_memory); 
+  /* Determine the segment's size. */ 
+  shmctl (segment_id, IPC_STAT, &shmbuffer); 
+  segment_size  =               shmbuffer.shm_segsz; 
+  printf ("segment size: %d\n", segment_size); 
+  /* Write a string to the shared memory segment.  */ 
+  //sprintf (shared_memory, "test!!!!."); 
+
+}
+
+
+//when cntrl+c pressed, kill motors
+
+void trap(int signal)
+
+{
+
+   
+ 
+   printf("ending program\n\r");
+
+   run_program=0;
 }
 
 
