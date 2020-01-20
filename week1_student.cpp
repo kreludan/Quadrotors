@@ -23,6 +23,12 @@
 #define PWR_MGMT_2       0x6C
 // #define M_PI             acos(-1.0) // PI for radian to degree conversion 
 
+
+// Safety Limits
+#define GYRO_LIM	300.0 	// Gyro should not exceed 300 degrees/sec
+#define PITCH_ANG	45.0	// Pitch should not exceed (+/-) 45 degrees
+#define ROLL_ANG	45.0	// Roll should not exceed (+/-) 45 degrees
+
 enum Ascale {
   AFS_2G = 0,
   AFS_4G,
@@ -85,12 +91,39 @@ int main (int argc, char *argv[])
     {
       read_imu();      
       update_filter();   
-
+      safety_check();
      
     }
       
   
 }
+
+void safety_check()
+{
+// Use the limits and catch keyboard events to check if we need to stop the machine
+// GYRO_LIM, PITCH_ANG, ROLL_ANG
+// Also turn off if space is pressed, keyboard times out, or we catch CTRL+C (as configured above in main())
+	if(shared_memory->key_press != null && shared_memory->key_press == " "){
+		run_program=0;
+	}
+	
+	if(Roll > ROLL_ANG || ROLL < -ROLL_ANG){
+		run_program=0;
+	}
+	
+	if(Pitch > PITCH_ANG || Pitch < -PITCH_ANG){
+		run_program=0;
+	}
+	
+	
+// xyz gyro values read from imu_data[0..2]
+	if(imu_data[0] > GYRO_LIM || imu_data[1] > GYRO_LIM || imu_data[2] > GYRO_LIM){
+		run_program=0;
+	}
+	
+	
+}
+
 
 void calibrate_imu()
 {
