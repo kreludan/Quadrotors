@@ -23,6 +23,12 @@
 #define PWR_MGMT_2       0x6C
 // #define M_PI             acos(-1.0) // PI for radian to degree conversion 
 
+
+// Safety Limits
+#define GYRO_LIM	300.0 	// Gyro should not exceed 300 degrees/sec
+#define PITCH_ANG	45.0	// Pitch should not exceed (+/-) 45 degrees
+#define ROLL_ANG	45.0	// Roll should not exceed (+/-) 45 degrees
+
 enum Ascale {
   AFS_2G = 0,
   AFS_4G,
@@ -67,110 +73,6 @@ float pitch_angle=0;
 float roll_angle=0;
 float Roll=0;
 float Pitch=0;
-float integrated_gyro_roll = 0;
-float integrated_gyro_pitch = 0;
-
-// DEFINES
-
-#define MAX_GYRO_ALLOWED 300
-#define MAX_ROLL_ANGLE_ALLOWED 45
-#define MAX_PITCH_ANGLE_ALLOWED 45
-
-void update_filter()
-{
-  
-  //get current time in nanoseconds
-  timespec_get(&te,TIME_UTC);
-  time_curr=te.tv_nsec;
-  //compute time since last execution
-  float imu_diff=time_curr-time_prev;           
-  
-  //check for rollover
-  if(imu_diff<=0)
-  {
-    imu_diff+=1000000000;
-  }
-  //convert to seconds
-  imu_diff=imu_diff/1000000000;
-  time_prev=time_curr;
-    
-  float az = imu_data[5];  // pulling out the values to display
-  float ay = imu_data[4];
-  float ax = imu_data[3];
-  
-            
-  float pitch_gyro = imu_data[0];
-
-  float pitch_gyro_delta;
-  pitch_gyro_delta = pitch_gyro * imu_diff;
-  integrated_gyro_pitch += pitch_gyro_delta;
-  
-  float roll_gyro = imu_data[1];     
-  
-  float roll_gyro_delta;
-  roll_gyro_delta = roll_gyro * imu_diff;
-  integrated_gyro_roll += roll_gyro_delta;
-
-  float a;  // tunes roll
-  a = 0.02;
-  Roll = roll_angle * a + ((1-a) * (roll_gyro_delta + Roll));
-
-  float b;  // tunes pitch
-  b = 0.02;
-  Pitch = pitch_angle * b + (1-b) * (pitch_gyro_delta + Pitch);
-
-
-  // Print graph values for roll - checkpoint 2
-  printf("%10.5f, %10.5f, %10.5f \n\r", Roll, roll_angle, integrated_gyro_roll);
-}
-
-void safety_check() {
-  if(shared_memory->key_press == " " || ) {
-    run_program = 0;
-  }
-  
-
-}
-
-
-
-//function to add
-void setup_keyboard()
-{
-
-  int segment_id;   
-  struct shmid_ds shmbuffer; 
-  int segment_size; 
-  const int shared_segment_size = 0x6400; 
-  int smhkey=33222;
-  
-  /* Allocate a shared memory segment.  */ 
-  segment_id = shmget (smhkey, shared_segment_size,IPC_CREAT | 0666); 
-  /* Attach the shared memory segment.  */ 
-  shared_memory = (Keyboard*) shmat (segment_id, 0, 0); 
-  printf ("shared memory attached at address %p\n", shared_memory); 
-  /* Determine the segment's size. */ 
-  shmctl (segment_id, IPC_STAT, &shmbuffer); 
-  segment_size  =               shmbuffer.shm_segsz; 
-  printf ("segment size: %d\n", segment_size); 
-  /* Write a string to the shared memory segment.  */ 
-  //sprintf (shared_memory, "test!!!!."); 
-
-}
-
-
-//when cntrl+c pressed, kill motors
-
-void trap(int signal)
-
-{
-
-   
- 
-   printf("ending program\n\r");
-
-   run_program=0;
-}
  
 int main (int argc, char *argv[])
 {
@@ -189,14 +91,39 @@ int main (int argc, char *argv[])
     {
       read_imu();      
       update_filter();   
-      
+      safety_check();
      
     }
-    
-    return 0;
       
   
 }
+
+void safety_check()
+{
+// Use the limits and catch keyboard events to check if we need to stop the machine
+// GYRO_LIM, PITCH_ANG, ROLL_ANG
+// Also turn off if space is pressed, keyboard times out, or we catch CTRL+C (as configured above in main())
+	if(shared_memory->key_press != null && shared_memory->key_press == " "){
+		run_program=0;
+	}
+	
+	if(Roll > ROLL_ANG || ROLL < -ROLL_ANG){
+		run_program=0;
+	}
+	
+	if(Pitch > PITCH_ANG || Pitch < -PITCH_ANG){
+		run_program=0;
+	}
+	
+	
+// xyz gyro values read from imu_data[0..2]
+	if(imu_data[0] > GYRO_LIM || imu_data[1] > GYRO_LIM || imu_data[2] > GYRO_LIM){
+		run_program=0;
+	}
+	
+	
+}
+
 
 void calibrate_imu()
 {
@@ -325,11 +252,9 @@ void calibrate_imu()
 
     // roll and pitch calculations
 
-    
+    roll_calibration += (atan2(ay, -az)*180.0/M_PI)/1000.0;
 
-    roll_calibration += (atan2(ax, -az) * (180.0/M_PI)) / 1000.0;
-  
-    pitch_calibration += (atan2(ay, -az) * (180.0/M_PI)) / 1000.0;
+	  pitch_calibration += (atan2(ax, -az)*180.0/M_PI)/1000.0;
 
   }
   
@@ -344,6 +269,8 @@ void read_imu()
   float ax=0;
   float az=0;
   float ay=0; 
+  float roll = 0;
+  float pitch = 0;
   int vh,vl;
   
   //read in data
@@ -423,15 +350,101 @@ void read_imu()
   
   // roll and pitch calculations
 
-  roll_angle = roll_calibration + (atan2(ax, -az) * (180.0/M_PI));
+  roll = -roll_calibration + (atan2(imu_data[4], -imu_data[5])*180.0/M_PI);
   
-  pitch_angle = -pitch_calibration - (atan2(ay, -az) * (180.0/M_PI));
+  pitch = -pitch_calibration + (atan2(imu_data[3], -imu_data[5])*180.0/M_PI); 
 
   //printf("Gyros: (%10.5f %10.5f %10.5f), Roll:  %10.5f, Pitch: %10.5f\n\r",imu_data[0], imu_data[1], imu_data[2], roll, pitch);
-
+  printf()
  
 
 
+}
+
+void update_filter()
+{
+  
+  //get current time in nanoseconds
+  timespec_get(&te,TIME_UTC);
+  time_curr=te.tv_nsec;
+  //compute time since last execution
+  float imu_diff=time_curr-time_prev;           
+  
+  //check for rollover
+  if(imu_diff<=0)
+  {
+    imu_diff+=1000000000;
+  }
+  //convert to seconds
+  imu_diff=imu_diff/1000000000;
+  time_prev=time_curr;
+    
+  float az = imu_data[5];  // pulling out the values to display
+  float ay = imu_data[4];
+  float ax = imu_data[3];
+  
+            
+  float pitch_gyro = imu_data[0];
+
+  float pitch_gyro_delta;
+  pitch_gyro_delta = pitch_gyro * imu_diff;
+  integrated_gyro_pitch += pitch_gyro_delta;
+  
+  float roll_gyro = imu_data[1];     
+  
+  float roll_gyro_delta;
+  roll_gyro_delta = roll_gyro * imu_diff;
+  integrated_gyro_roll += roll_gyro_delta;
+
+  float a;  // tunes roll
+  a = 0.02;
+  Roll = roll_angle * a + ((1-a) * (roll_gyro_delta + Roll));
+
+  float b;  // tunes pitch
+  b = 0.02;
+  Pitch = pitch_angle * b + (1-b) * (pitch_gyro_delta + Pitch);
+
+
+  // Print graph values for roll - checkpoint 2
+  printf("%10.5f, %10.5f, %10.5f \n\r", Roll, roll_angle, integrated_gyro_roll);
+}
+
+//function to add
+void setup_keyboard()
+{
+
+  int segment_id;   
+  struct shmid_ds shmbuffer; 
+  int segment_size; 
+  const int shared_segment_size = 0x6400; 
+  int smhkey=33222;
+  
+  /* Allocate a shared memory segment.  */ 
+  segment_id = shmget (smhkey, shared_segment_size,IPC_CREAT | 0666); 
+  /* Attach the shared memory segment.  */ 
+  shared_memory = (Keyboard*) shmat (segment_id, 0, 0); 
+  printf ("shared memory attached at address %p\n", shared_memory); 
+  /* Determine the segment's size. */ 
+  shmctl (segment_id, IPC_STAT, &shmbuffer); 
+  segment_size  =               shmbuffer.shm_segsz; 
+  printf ("segment size: %d\n", segment_size); 
+  /* Write a string to the shared memory segment.  */ 
+  //sprintf (shared_memory, "test!!!!."); 
+
+}
+
+
+//when cntrl+c pressed, kill motors
+
+void trap(int signal)
+
+{
+
+   
+ 
+   printf("ending program\n\r");
+
+   run_program=0;
 }
 
 
