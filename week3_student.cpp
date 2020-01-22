@@ -29,6 +29,7 @@
 #define PITCH_ANG	45.0	// Pitch should not exceed (+/-) 45 degrees
 #define ROLL_ANG	45.0	// Roll should not exceed (+/-) 45 degrees
 
+
 enum Ascale {
   AFS_2G = 0,
   AFS_4G,
@@ -75,11 +76,313 @@ float Roll=0;
 float Pitch=0;
 float integrated_gyro_roll = 0;
 float integrated_gyro_pitch = 0;
+int last_heartbeat=-1;
+long safety_time_prev;
+long safety_time_curr;
+float time_since_heartbeat=0;
+int last_version=-1;
+int pwm;
+// DEFINES
+
+#define MAX_GYRO_ALLOWED 300
+#define MAX_ROLL_ANGLE_ALLOWED 45
+#define MAX_PITCH_ANGLE_ALLOWED 45
+#define PWM_MAX 1300
+#define frequency 25000000.0
+#define LED0 0x6			
+#define LED0_ON_L 0x6		
+#define LED0_ON_H 0x7		
+#define LED0_OFF_L 0x8		
+#define LED0_OFF_H 0x9		
+#define LED_MULTIPLYER 4	
+
+void init_pwm()
+{
+
+    pwm=wiringPiI2CSetup (0x40);
+    if(pwm==-1)
+    {
+      printf("-----cant connect to I2C device %d --------\n",pwm);
+     
+    }
+    else
+    {
+  
+      float freq =400.0*.95;
+      float prescaleval = 25000000;
+      prescaleval /= 4096;
+      prescaleval /= freq;
+      prescaleval -= 1;
+      uint8_t prescale = floor(prescaleval+0.5);
+      int settings = wiringPiI2CReadReg8(pwm, 0x00) & 0x7F;
+      int sleep	= settings | 0x10;
+      int wake 	= settings & 0xef;
+      int restart = wake | 0x80;
+      wiringPiI2CWriteReg8(pwm, 0x00, sleep);
+      wiringPiI2CWriteReg8(pwm, 0xfe, prescale);
+      wiringPiI2CWriteReg8(pwm, 0x00, wake);
+      delay(10);
+      wiringPiI2CWriteReg8(pwm, 0x00, restart|0x20);
+    }
+}
+
+
+void init_motor(uint8_t channel)
+{
+	int on_value=0;
+
+	int time_on_us=900;
+	uint16_t off_value=round((time_on_us*4096.f)/(1000000.f/400.0));
+
+	wiringPiI2CWriteReg8(pwm, LED0_ON_L + LED_MULTIPLYER * channel, on_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_ON_H + LED_MULTIPLYER * channel, on_value >> 8);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_L + LED_MULTIPLYER * channel, off_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_H + LED_MULTIPLYER * channel, off_value >> 8);
+	delay(100);
+
+	 time_on_us=1200;
+	 off_value=round((time_on_us*4096.f)/(1000000.f/400.0));
+
+	wiringPiI2CWriteReg8(pwm, LED0_ON_L + LED_MULTIPLYER * channel, on_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_ON_H + LED_MULTIPLYER * channel, on_value >> 8);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_L + LED_MULTIPLYER * channel, off_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_H + LED_MULTIPLYER * channel, off_value >> 8);
+	delay(100);
+
+	 time_on_us=1000;
+	 off_value=round((time_on_us*4096.f)/(1000000.f/400.0));
+
+	wiringPiI2CWriteReg8(pwm, LED0_ON_L + LED_MULTIPLYER * channel, on_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_ON_H + LED_MULTIPLYER * channel, on_value >> 8);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_L + LED_MULTIPLYER * channel, off_value & 0xFF);
+	wiringPiI2CWriteReg8(pwm, LED0_OFF_H + LED_MULTIPLYER * channel, off_value >> 8);
+	delay(100);
+
+}
+
+void set_PWM( uint8_t channel, float time_on_us)
+{
+  if(run_program==1)
+  {
+    if(time_on_us>PWM_MAX)
+    {
+      time_on_us=PWM_MAX;
+    }
+    else if(time_on_us<1000)
+    {
+      time_on_us=1000;
+    }
+  	uint16_t off_value=round((time_on_us*4096.f)/(1000000.f/400.0));
+  	wiringPiI2CWriteReg16(pwm, LED0_OFF_L + LED_MULTIPLYER * channel,off_value);
+  }
+  else
+  {  
+    time_on_us=1000;   
+  	uint16_t off_value=round((time_on_us*4096.f)/(1000000.f/400.0));
+  	wiringPiI2CWriteReg16(pwm, LED0_OFF_L + LED_MULTIPLYER * channel,off_value);
+  }
+}
+
+void update_filter()
+{
+  
+  //get current time in nanoseconds
+  timespec_get(&te,TIME_UTC);
+  time_curr=te.tv_nsec;
+  //compute time since last execution
+  float imu_diff=time_curr-time_prev;           
+  
+  //check for rollover
+  if(imu_diff<=0)
+  {
+    imu_diff+=1000000000;
+  }
+  //convert to seconds
+  imu_diff=imu_diff/1000000000;
+  time_prev=time_curr;
+    
+  float az = imu_data[5];  // pulling out the values to display
+  float ay = imu_data[4];
+  float ax = imu_data[3];
+  
+            
+  float pitch_gyro = imu_data[0];
+
+  float pitch_gyro_delta;
+  pitch_gyro_delta = pitch_gyro * imu_diff;
+  integrated_gyro_pitch += pitch_gyro_delta;
+  
+  float roll_gyro = imu_data[1];     
+  
+  float roll_gyro_delta;
+  roll_gyro_delta = roll_gyro * imu_diff;
+  integrated_gyro_roll += roll_gyro_delta;
+
+  float a;  // tunes roll
+  a = 0.02;
+  Roll = roll_angle * a + ((1-a) * (roll_gyro_delta + Roll));
+
+  float b;  // tunes pitch
+  b = 0.02;
+  Pitch = pitch_angle * b + (1-b) * (pitch_gyro_delta + Pitch);
+
+
+  // Print graph values for roll - checkpoint 2
+  // printf("%10.5f, %10.5f, %10.5f \n\r", Roll, roll_angle, integrated_gyro_roll);
+}
+
+void pid_update() {
+  
+  float neutral_power = 1100;
+  float error = -Pitch;
+  float P = 1;
+  float right_quadrants = neutral_power - error*P;
+  float left_quadrants = neutral_power + error*P;
+  if(right_quadrants > PWM_MAX) {
+    right_quadrants = PWM_MAX;
+  }
+  if(left_quadrants > PWM_MAX) {
+    left_quadrants = PWM_MAX;
+  }
+  if(right_quadrants < 1000) {
+    right_quadrants = 1000;
+  }
+  if(left_quadrants < 1000) {
+    left_quadrants = 1000;
+  }  
+  set_PWM(0, right_quadrants);
+  set_PWM(1, right_quadrants);
+  set_PWM(2, left_quadrants);
+  set_PWM(3, left_quadrants);
+  
+  printf("%10.5f, %10.5f, %f, %f, %f, %f \n\r", pitch_angle, Pitch, right_quadrants, right_quadrants, left_quadrants, left_quadrants);
+
+}
+
+void safety_check()
+{
+// Use the limits and catch keyboard events to check if we need to stop the machine
+// GYRO_LIM, PITCH_ANG, ROLL_ANG
+// Also turn off if space is pressed, keyboard times out, or we catch CTRL+C (as configured above in main())
+
+// Refresh memory
+    Keyboard keyboard=*shared_memory;
+
+//get current time in nanoseconds
+  timespec_get(&te,TIME_UTC);
+  safety_time_curr=te.tv_nsec;
+  //compute time since last execution
+  float imu_diff=safety_time_curr-safety_time_prev;  
+  int curr_heartbeat = shared_memory->heartbeat;         
+  
+  //check for rollover
+  if(imu_diff<=0 )
+  {
+    imu_diff+=1000000000;
+  }
+  //convert to seconds
+  imu_diff=imu_diff/1000000000.0;
+  
+  safety_time_prev=safety_time_curr;
+  
+
+  
+  if(curr_heartbeat != last_heartbeat){
+    time_since_heartbeat = 0;
+  }
+  
+  // printf("curr: %d, last: %d, time: %d", curr_heartbeat, last_heartbeat, time_since_heartbeat);
+  
+  if(curr_heartbeat == last_heartbeat){
+  
+  time_since_heartbeat += imu_diff;
+  }
+
+  if(time_since_heartbeat >= 0.25 && last_heartbeat == curr_heartbeat){
+  printf("FAILING DUE TO NO HEARTBEAT SIGNAL, %10.5f", imu_diff);
+  
+  run_program=0;
+  }
+  
+  last_heartbeat = curr_heartbeat;
+
+  char curr_key = shared_memory->key_press;
+	if(curr_key == ' '){
+   printf("FAILING DUE TO SPACE BEING PRESSED");
+		run_program=0;
+	}
+	
+	if(Roll > ROLL_ANG || Roll < -ROLL_ANG){
+   printf("FAILING DUE TO ROLL");
+		run_program=0;
+	}   
+	
+	if(Pitch > PITCH_ANG || Pitch < -PITCH_ANG){
+		run_program=0;
+  printf("FAILING DUE TO PITCH");
+	}
+	
+	
+// xyz gyro values read from imu_data[0..2]
+	if(imu_data[0] > GYRO_LIM || imu_data[1] > GYRO_LIM || imu_data[2] > GYRO_LIM){
+ printf("FAILING DUE TO GYRO LIMITS");
+		run_program=0;
+	}
+	
+	
+}
+
+
+//function to add
+void setup_keyboard()
+{
+
+  int segment_id;   
+  struct shmid_ds shmbuffer; 
+  int segment_size; 
+  const int shared_segment_size = 0x6400; 
+  int smhkey=33222;
+  
+  /* Allocate a shared memory segment.  */ 
+  segment_id = shmget (smhkey, shared_segment_size,IPC_CREAT | 0666); 
+  /* Attach the shared memory segment.  */ 
+  shared_memory = (Keyboard*) shmat (segment_id, 0, 0); 
+  printf ("shared memory attached at address %p\n", shared_memory); 
+  /* Determine the segment's size. */ 
+  shmctl (segment_id, IPC_STAT, &shmbuffer); 
+  segment_size  =               shmbuffer.shm_segsz; 
+  printf ("segment size: %d\n", segment_size); 
+  /* Write a string to the shared memory segment.  */ 
+  //sprintf (shared_memory, "test!!!!."); 
+
+}
+
+
+//when cntrl+c pressed, kill motors
+
+void trap(int signal)
+
+{
+
+   
+ 
+   printf("ending program\n\r");
+
+   run_program=0;
+}
  
 int main (int argc, char *argv[])
 {
 
     setup_imu();
+    
+    init_pwm();
+    init_motor(0);
+    init_motor(1);
+    init_motor(2);
+    init_motor(3);
+    delay(1000);
+
     calibrate_imu();
 
     //in main before while(1) loop add...
@@ -92,40 +395,22 @@ int main (int argc, char *argv[])
     while(run_program==1)
     {
       read_imu();      
-      update_filter();   
+      update_filter();  
+      pid_update(); 
       safety_check();
+      
      
     }
+    
+    set_PWM(0, 1000);
+    set_PWM(1, 1000);
+    set_PWM(2, 1000);
+    set_PWM(3, 1000); 
+       
+    return 0;
       
   
 }
-
-void safety_check()
-{
-// Use the limits and catch keyboard events to check if we need to stop the machine
-// GYRO_LIM, PITCH_ANG, ROLL_ANG
-// Also turn off if space is pressed, keyboard times out, or we catch CTRL+C (as configured above in main())
-	if(shared_memory->key_press != NULL && shared_memory->key_press == " "){
-		run_program=0;
-	}
-	
-	if(Roll > ROLL_ANG || ROLL < -ROLL_ANG){
-		run_program=0;
-	} 
-	
-	if(Pitch > PITCH_ANG || Pitch < -PITCH_ANG){
-		run_program=0;
-	}
-	
-	
-// xyz gyro values read from imu_data[0..2]
-	if(imu_data[0] > GYRO_LIM || imu_data[1] > GYRO_LIM || imu_data[2] > GYRO_LIM){
-		run_program=0;
-	}
-	
-	
-}
-
 
 void calibrate_imu()
 {
@@ -254,13 +539,15 @@ void calibrate_imu()
 
     // roll and pitch calculations
 
-    roll_calibration += (atan2(ay, -az)*180.0/M_PI)/1000.0;
+    
 
-	  pitch_calibration += (atan2(ax, -az)*180.0/M_PI)/1000.0;
+    roll_calibration += (atan2(ax, -az) * (180.0/M_PI)) / 1000.0;
+  
+    pitch_calibration += (atan2(ay, -az) * (180.0/M_PI)) / 1000.0;
 
   }
   
-  printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
+  // printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
 
 
 }
@@ -271,8 +558,6 @@ void read_imu()
   float ax=0;
   float az=0;
   float ay=0; 
-  float roll = 0;
-  float pitch = 0;
   int vh,vl;
   
   //read in data
@@ -352,103 +637,15 @@ void read_imu()
   
   // roll and pitch calculations
 
-  roll = -roll_calibration + (atan2(imu_data[4], -imu_data[5])*180.0/M_PI);
+  roll_angle = roll_calibration + (atan2(ax, -az) * (180.0/M_PI));
   
-  pitch = -pitch_calibration + (atan2(imu_data[3], -imu_data[5])*180.0/M_PI); 
+  pitch_angle = -pitch_calibration - (atan2(ay, -az) * (180.0/M_PI));
 
   //printf("Gyros: (%10.5f %10.5f %10.5f), Roll:  %10.5f, Pitch: %10.5f\n\r",imu_data[0], imu_data[1], imu_data[2], roll, pitch);
-  printf()
+
  
 
 
-}
-
-
-void update_filter()
-{
-  
-  //get current time in nanoseconds
-  timespec_get(&te,TIME_UTC);
-  time_curr=te.tv_nsec;
-  //compute time since last execution
-  float imu_diff=time_curr-time_prev;           
-  
-  //check for rollover
-  if(imu_diff<=0)
-  {
-    imu_diff+=1000000000;
-  }
-  //convert to seconds
-  imu_diff=imu_diff/1000000000;
-  time_prev=time_curr;
-    
-  float az = imu_data[5];  // pulling out the values to display
-  float ay = imu_data[4];
-  float ax = imu_data[3];
-  
-            
-  float pitch_gyro = imu_data[0];
-
-  float pitch_gyro_delta;
-  pitch_gyro_delta = pitch_gyro * imu_diff;
-  integrated_gyro_pitch += pitch_gyro_delta;
-  
-  float roll_gyro = imu_data[1];     
-  
-  float roll_gyro_delta;
-  roll_gyro_delta = roll_gyro * imu_diff;
-  integrated_gyro_roll += roll_gyro_delta;
-
-  float a;  // tunes roll
-  a = 0.02;
-  Roll = roll_angle * a + ((1-a) * (roll_gyro_delta + Roll));
-
-  float b;  // tunes pitch
-  b = 0.02;
-  Pitch = pitch_angle * b + (1-b) * (pitch_gyro_delta + Pitch);
-
-
-  // Print graph values for roll - checkpoint 2
-  printf("%10.5f, %10.5f, %10.5f \n\r", Roll, roll_angle, integrated_gyro_roll);
-}
-
-
-//function to add
-void setup_keyboard()
-{
-
-  int segment_id;   
-  struct shmid_ds shmbuffer; 
-  int segment_size; 
-  const int shared_segment_size = 0x6400; 
-  int smhkey=33222;
-  
-  /* Allocate a shared memory segment.  */ 
-  segment_id = shmget (smhkey, shared_segment_size,IPC_CREAT | 0666); 
-  /* Attach the shared memory segment.  */ 
-  shared_memory = (Keyboard*) shmat (segment_id, 0, 0); 
-  printf ("shared memory attached at address %p\n", shared_memory); 
-  /* Determine the segment's size. */ 
-  shmctl (segment_id, IPC_STAT, &shmbuffer); 
-  segment_size  =               shmbuffer.shm_segsz; 
-  printf ("segment size: %d\n", segment_size); 
-  /* Write a string to the shared memory segment.  */ 
-  //sprintf (shared_memory, "test!!!!."); 
-
-}
-
-
-//when cntrl+c pressed, kill motors
-
-void trap(int signal)
-
-{
-
-   
- 
-   printf("ending program\n\r");
-
-   run_program=0;
 }
 
 
