@@ -241,7 +241,7 @@ void pid_update() {
   float P = 10;
 
   float D = 150;
-  float I_gain = 0.003;
+  float I_gain = 0.03;
 
   Pitch_I_term += error * I_gain;
   if(Pitch_I_term < -100) {
@@ -258,6 +258,7 @@ void pid_update() {
   
   float right_PD = neutral_power + error*P + right_D;
   float left_PD = neutral_power - error*P + left_D;
+  /*
   
   /*  CODE FOR PD-CONTROLLER ONLY : USE TO GET GRAPH / DEMONSTRATION FOFR CHECKPOINT 3
   if(right_PD > PWM_MAX) {
@@ -283,7 +284,7 @@ void pid_update() {
   */
 
   // PID CONTROLLER CODE : FOR CHECKPOINT 4
-
+  
   float right_PID = neutral_power + error*P + right_D + Pitch_I_term;
   float left_PID = neutral_power - error*P + left_D - Pitch_I_term;
   if(right_PID > PWM_MAX) {
@@ -597,11 +598,11 @@ void calibrate_imu()
 
     roll_calibration += (atan2(ax, -az) * (180.0/M_PI)) / 1000.0;
   
-    pitch_calibration += (atan2(ay, -az) * (180.0/M_PI)) / 1000.0;
+    pitch_calibration -= (atan2(ay, -az) * (180.0/M_PI)) / 1000.0;
 
   }
   
-  // printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
+  printf("calibration complete, %f %f %f %f %f %f\n\r",x_gyro_calibration,y_gyro_calibration,z_gyro_calibration,roll_calibration,pitch_calibration,accel_z_calibration);
 
 
 }
