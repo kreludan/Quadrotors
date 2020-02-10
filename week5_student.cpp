@@ -48,14 +48,19 @@ int setup_imu();
 void calibrate_imu();      
 void read_imu();    
 void update_filter();
+void get_joystick();
 
 //global variables
 
 struct Keyboard {
-  char key_press;
-  int heartbeat;
-  int version;
+  int keypress;
+  int pitch;
+  int roll;
+  int yaw;
+  int thrust;
+  int sequence_num;
 };
+
 Keyboard* shared_memory; 
 int run_program=1;
 int imu;
@@ -74,6 +79,7 @@ float pitch_angle=0;
 float roll_angle=0;
 float Roll=0;
 float Pitch=0;
+float previous_Roll=0;
 float previous_Pitch=0;
 float integrated_gyro_roll = 0;
 float integrated_gyro_pitch = 0;
@@ -82,9 +88,17 @@ long safety_time_prev;
 long safety_time_curr;
 float time_since_heartbeat=0;
 int last_version=-1;
+int Thrust = 0;
+int neutral_thrust = 1250;
 int pwm;
 float Pitch_I_term=0;
+float Roll_I_term=0;
 
+#define KILL 32
+#define PAUSE 33
+#define UNPAUSE 34
+#define CALIBRATE 35
+int paused = 1;
 // DEFINES
 
 #define MAX_GYRO_ALLOWED 300
@@ -236,12 +250,31 @@ void update_filter()
 
 void pid_update() {
   
-  float neutral_power = 1300;
-  float error = -Pitch;
-  float P = 10;
+  // float neutral_power = 1300;
+  Keyboard keyboard=*shared_memory;
+  float desired_pitch = 20.0*(shared_memory->pitch - 128.0)/112.0;  
+  float desired_roll = 20.0*(shared_memory->roll - 128.0)/112.0;
+  float roll_error = desired_roll-Roll;
+  float Pr = 11;
+  float Dr = 150;
+  float Ir_gain = 0.03;
+  
+  Roll_I_term += roll_error*Ir_gain;
+  if(Roll_I_term < -100){
+    Roll_I_term = -100;
+  }
+  
+  if(Roll_I_term > 100){
+    Roll_I_term = 100;
+  }
+  
 
-  float D = 150;
-  float I_gain = 0.03;
+  
+  float error = -desired_pitch-Pitch;
+  float P = 0; // 10
+
+  float D = 0; // 150
+  float I_gain = 0; // 0.03
 
   Pitch_I_term += error * I_gain;
   if(Pitch_I_term < -100) {
@@ -256,37 +289,44 @@ void pid_update() {
   float right_D = -pitch_velocity*D; 
   float left_D = pitch_velocity*D;
   
-  float right_PD = neutral_power + error*P + right_D;
-  float left_PD = neutral_power - error*P + left_D;
+  float right_PD = Thrust + error*P + right_D;
+  float left_PD = Thrust - error*P + left_D;
   /*
   
   /*  CODE FOR PD-CONTROLLER ONLY : USE TO GET GRAPH / DEMONSTRATION FOFR CHECKPOINT 3
-  if(right_PD > PWM_MAX) {
-    right_PD = PWM_MAX;
-  }
-  if(left_PD > PWM_MAX) {
-    left_PD = PWM_MAX;
-  }
-  if(right_PD < 1000) {
-    right_PD = 1000;
-  } 
-  if(left_PD < 1000) {
-    left_PD = 1000;
-  }  
 
-
-  set_PWM(0, right_PD);
-  set_PWM(1, right_PD);
-  set_PWM(2, left_PD);
-  set_PWM(3, left_PD);
 
   printf("%10.5f, %10.5f, %f, %f, %f, %f \n\r", pitch_angle, Pitch, right_PD, right_PD, left_PD, left_PD);
   */
 
   // PID CONTROLLER CODE : FOR CHECKPOINT 4
+  float roll_vel = Roll - previous_Roll;
+  float right_Dr = roll_vel*Dr;
+  float left_Dr = -roll_vel*Dr;
+  float right_PDr = Thrust + roll_error*Pr + right_Dr;
+  float left_PDr = Thrust - roll_error*Pr + left_Dr;
   
-  float right_PID = neutral_power + error*P + right_D + Pitch_I_term;
-  float left_PID = neutral_power - error*P + left_D - Pitch_I_term;
+  float right_PIDr = Thrust - roll_error*Pr + right_Dr - Roll_I_term;
+  float left_PIDr = Thrust + roll_error*Pr + left_Dr + Roll_I_term;
+  if(right_PIDr > PWM_MAX){
+    right_PIDr = PWM_MAX;
+  }
+  
+  if(left_PIDr > PWM_MAX){
+    left_PIDr = PWM_MAX;
+  }
+  
+  if(right_PIDr < 1000){
+    right_PIDr = 1000;
+  }
+  
+  if(left_PIDr < 1000){
+    left_PIDr = 1000;
+  }  
+  
+  
+  float right_PID = Thrust + error*P + right_D + Pitch_I_term;
+  float left_PID = Thrust - error*P + left_D - Pitch_I_term;
   if(right_PID > PWM_MAX) {
     right_PID = PWM_MAX;
   }
@@ -301,16 +341,22 @@ void pid_update() {
   }  
 
 
-  set_PWM(0, right_PID);
-  set_PWM(1, right_PID);
-  set_PWM(2, left_PID);
-  set_PWM(3, left_PID);
-
-  printf("%10.5f, %10.5f, %f, %f, %f, %f \n\r", pitch_angle, Pitch, right_PID, right_PID, left_PID, left_PID);
+  // set_PWM(0, right_PID);
+  // set_PWM(1, right_PID);
+  // set_PWM(2, left_PID);
+  //set_PWM(3, left_PID);
+  set_PWM(0, right_PIDr);
+  set_PWM(3, right_PIDr);
+  set_PWM(1, left_PIDr);
+  set_PWM(2, left_PIDr);
+  //printf("%10.5f, %10.5f, %f, %f, %f, %f \n\r", pitch_angle, Pitch, right_PID, right_PID, left_PID, left_PID);
+  printf("%10.5f, %10.5f \n\r", desired_roll, Roll);
 }
 
 void safety_check()
 {
+
+
 // Use the limits and catch keyboard events to check if we need to stop the machine
 // GYRO_LIM, PITCH_ANG, ROLL_ANG
 // Also turn off if space is pressed, keyboard times out, or we catch CTRL+C (as configured above in main())
@@ -323,7 +369,7 @@ void safety_check()
   safety_time_curr=te.tv_nsec;
   //compute time since last execution
   float imu_diff=safety_time_curr-safety_time_prev;  
-  int curr_heartbeat = shared_memory->heartbeat;         
+  int curr_heartbeat = shared_memory->sequence_num;         
   
   //check for rollover
   if(imu_diff<=0 )
@@ -356,11 +402,8 @@ void safety_check()
   
   last_heartbeat = curr_heartbeat;
 
-  char curr_key = shared_memory->key_press;
-	if(curr_key == ' '){
-   printf("FAILING DUE TO SPACE BEING PRESSED");
-		run_program=0;
-	}
+ 
+ 
 	
 	if(Roll > ROLL_ANG || Roll < -ROLL_ANG){
    printf("FAILING DUE TO ROLL");
@@ -424,6 +467,24 @@ void trap(int signal)
    run_program=0;
 }
  
+void get_joystick(){
+
+  Keyboard keyboard=*shared_memory;
+  int kp = shared_memory->keypress;
+  if(kp == KILL){
+    run_program = 0;
+  }
+  else if(kp == PAUSE){
+    paused = 1;
+  }
+  else if(kp == UNPAUSE){
+    paused = 0;
+  }
+  else if(kp == CALIBRATE){
+    calibrate_imu();
+  }   
+} 
+ 
 int main (int argc, char *argv[])
 {
 
@@ -450,8 +511,22 @@ int main (int argc, char *argv[])
     
       read_imu();
       previous_Pitch = Pitch;
-      update_filter();  
-      pid_update(); 
+      previous_Roll = Roll;
+      Keyboard keyboard=*shared_memory;
+      Thrust = neutral_thrust + shared_memory->thrust;
+      get_joystick();
+      if(paused == 0){
+        update_filter();
+        pid_update();
+      }else{
+      set_PWM(0, 1000);
+      set_PWM(1, 1000);
+      set_PWM(2, 1000);
+      set_PWM(3, 1000); 
+      
+      }
+      //update_filter();  
+      //pid_update(); 
       safety_check();
       
      
